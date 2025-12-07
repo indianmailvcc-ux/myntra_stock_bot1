@@ -22,20 +22,21 @@ app = Client(
     bot_token=BOT_TOKEN,
 )
 
-# ========== DEBUG DIRECT /start HANDLER (Must respond) ========== #
+# ========== DEBUG /start HANDLER (VERY FLEXIBLE) ========== #
 
-@app.on_message(filters.command("start") & filters.private)
+@app.on_message(
+    filters.command(["start", "Start", "START"], prefixes=["/", "!", "."])
+)
 async def debug_start_handler(client: Client, message: Message):
-    print(f"[OK] /start received -> User: {message.from_user.id}")
+    print(f"[OK] /start received -> User: {message.from_user.id}, Chat: {message.chat.id}")
     await message.reply_text(
         "🟢 *Bot is live and responding!*\n"
-        "Now handlers folder is next to activate.\n\n"
-        "Use:\n"
-        "➡️ `/track <url> <size>`\n"
-        "➡️ `/list`\n"
-        "➡️ `/untrack 1`\n\n"
-
-        "**If you see this message = bot backend 100% working.**",
+        "Yeh reply `main.py` ke direct handler se aa raha hai.\n\n"
+        "Commands:\n"
+        "• `/track <myntra_url> <size>`\n"
+        "• `/list`\n"
+        "• `/untrack 1`\n\n"
+        "_Agar yeh message dikh raha hai = backend 100% OK._",
         quote=True
     )
 
@@ -68,13 +69,13 @@ async def _check_once():
         if last_status != "in_stock" and current_status == "in_stock":
             txt = (
                 "🎉 *Back in Stock!*\n"
-                f"Size `{size}` is now **IN STOCK**\n\n"
+                f"Size `{size}` is now **IN STOCK** on Myntra.\n\n"
                 f"{url}"
             )
             try:
                 await app.send_message(chat_id, txt)
-            except:
-                pass
+            except Exception as e:
+                print("[ERROR] while sending stock message:", e)
 
         if isinstance(doc_id, str):
             doc_id = ObjectId(doc_id)
@@ -91,8 +92,8 @@ async def scheduler_loop():
             if OWNER_ID:
                 try:
                     await app.send_message(OWNER_ID, f"⚠ Checker Error: {e}")
-                except:
-                    pass
+                except Exception as e2:
+                    print("[ERROR] failed to send checker error:", e2)
         await asyncio.sleep(CHECK_INTERVAL)
 
 
@@ -117,31 +118,42 @@ async def start_web():
 
 async def main():
     print("\n===== BOOTING BOT =====")
-    print("API_ID=", API_ID, " BOT=", bool(BOT_TOKEN), " MONGO=", bool(MONGO_URI))
+    print("API_ID=", API_ID, " BOT_TOKEN set=", bool(BOT_TOKEN), " MONGO_URI set=", bool(MONGO_URI))
 
+    # DB init
     try:
         await init_db()
         print("[DB] Connected")
     except Exception as e:
         print("[DB ERR]", e)
 
+    # Load handlers from handlers/ folder
     print("[HANDLERS] Loading...")
     register_all_handlers(app)
 
+    # Connect to Telegram
     print("[BOT] Connecting to Telegram...")
     await app.start()
     print("[BOT] LIVE ✔")
 
+    # Notify owner on restart
     if OWNER_ID:
         try:
-            await app.send_message(OWNER_ID, "🟢 Bot restarted on Render.")
-        except: pass
+            await app.send_message(OWNER_ID, "🟢 Bot restarted on Render. (/start debug enabled)")
+        except Exception as e:
+            print("[WARN] Could not DM owner:", e)
 
+    # Start background jobs
     asyncio.create_task(scheduler_loop())
     asyncio.create_task(start_web())
 
-    print("[SYSTEM] Idle mode")
+    print("[SYSTEM] Idle mode (waiting for updates)")
     await idle()
+
+    print("[SYSTEM] Shutting down...")
+    await close_db()
+    await app.stop()
+    print("[SYSTEM] Bot stopped.")
 
 
 if __name__ == "__main__":
