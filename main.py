@@ -3,13 +3,17 @@ import os
 from typing import List
 
 from bson import ObjectId
-from pyrogram import Client, idle
+from pyrogram import Client, idle, filters
+from pyrogram.types import Message
 from aiohttp import web
 
 from config import API_ID, API_HASH, BOT_TOKEN, CHECK_INTERVAL, OWNER_ID, MONGO_URI
 from db import init_db, close_db, get_all_trackings, update_tracking_status
 from myntra_checker import check_stock
 from handlers import register_all_handlers
+
+
+# ===================== TELEGRAM BOT CLIENT ===================== #
 
 app = Client(
     "myntra_stock_bot",
@@ -18,11 +22,32 @@ app = Client(
     bot_token=BOT_TOKEN,
 )
 
+# ========== DEBUG DIRECT /start HANDLER (Must respond) ========== #
+
+@app.on_message(filters.command("start") & filters.private)
+async def debug_start_handler(client: Client, message: Message):
+    print(f"[OK] /start received -> User: {message.from_user.id}")
+    await message.reply_text(
+        "🟢 *Bot is live and responding!*\n"
+        "Now handlers folder is next to activate.\n\n"
+        "Use:\n"
+        "➡️ `/track <url> <size>`\n"
+        "➡️ `/list`\n"
+        "➡️ `/untrack 1`\n\n"
+
+        "**If you see this message = bot backend 100% working.**",
+        quote=True
+    )
+
+
+# ======================== STOCK CHECKER ======================== #
 
 async def _check_once():
-    print(">>> Running _check_once()")
+    print("[LOOP] Checking Myntra items…")
+
     items: List[dict] = await get_all_trackings()
-    print(f">>> Found {len(items)} items in DB")
+    print(f"[DB] {len(items)} items found")
+
     if not items:
         return
 
@@ -33,25 +58,23 @@ async def _check_once():
         chat_id = item.get("chat_id")
         doc_id = item.get("_id")
 
-        print(f">>> Checking {url} size {size}, last_status={last_status}")
-
         current_status = await check_stock(url, size)
-        print(f">>> Current_status = {current_status}")
+        print(f"[CHECK] URL={url} SIZE={size} STATUS={current_status}")
 
         if current_status == "unknown":
             continue
 
+        # notify if status changes Out => In
         if last_status != "in_stock" and current_status == "in_stock":
+            txt = (
+                "🎉 *Back in Stock!*\n"
+                f"Size `{size}` is now **IN STOCK**\n\n"
+                f"{url}"
+            )
             try:
-                text = (
-                    "🎉 Good news!\n\n"
-                    f"Jis product ko aap track kar rahe the, size `{size}` ab **IN STOCK** hai Myntra pe!\n\n"
-                    f"Link: {url}\n\n"
-                    "Jaldi order kar lo, fir se out of stock ho sakta hai. 😉"
-                )
-                await app.send_message(chat_id, text, disable_web_page_preview=False)
-            except Exception as e:
-                print(f">>> Error while sending message: {e}")
+                await app.send_message(chat_id, txt)
+            except:
+                pass
 
         if isinstance(doc_id, str):
             doc_id = ObjectId(doc_id)
@@ -59,88 +82,70 @@ async def _check_once():
 
 
 async def scheduler_loop():
-    print(">>> Scheduler loop started")
+    print("[SCHEDULER] Loop active")
     while True:
         try:
             await _check_once()
         except Exception as e:
-            print(f">>> Scheduler error: {e}")
+            print("[ERROR] Checker failed:", e)
             if OWNER_ID:
                 try:
-                    await app.send_message(OWNER_ID, f"Checker error: {e}")
-                except Exception as e2:
-                    print(f">>> Failed to send checker error to owner: {e2}")
+                    await app.send_message(OWNER_ID, f"⚠ Checker Error: {e}")
+                except:
+                    pass
         await asyncio.sleep(CHECK_INTERVAL)
 
 
-# ----------- Tiny HTTP server for Render health check ----------
+# ========================= WEB SERVER ========================== #
 
-async def handle_root(request):
-    return web.Response(text="OK")
+async def http_index(_):
+    return web.Response(text="Myntra bot running OK")
 
-
-async def start_web_server():
+async def start_web():
     app_web = web.Application()
-    app_web.router.add_get("/", handle_root)
+    app_web.router.add_get("/", http_index)
 
     port = int(os.getenv("PORT", "10000"))
     runner = web.AppRunner(app_web)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f">>> HTTP server started on port {port}")
+    print(f"[WEB] Server running on {port}")
 
 
-# ------------------------------ MAIN ------------------------------
+# ============================= MAIN ============================ #
 
 async def main():
-    print(">>> main() starting")
-    print(f">>> API_ID={API_ID}, BOT_TOKEN set={bool(BOT_TOKEN)}, MONGO_URI set={bool(MONGO_URI)}")
+    print("\n===== BOOTING BOT =====")
+    print("API_ID=", API_ID, " BOT=", bool(BOT_TOKEN), " MONGO=", bool(MONGO_URI))
 
-    # 1) DB init
     try:
         await init_db()
-        print(">>> DB init OK")
+        print("[DB] Connected")
     except Exception as e:
-        print(f">>> DB init FAILED: {e}")
-        # DB fail hone par bhi bot start karne denge
+        print("[DB ERR]", e)
 
-    # 2) Register handlers
-    print(">>> Registering handlers")
+    print("[HANDLERS] Loading...")
     register_all_handlers(app)
 
-    # 3) Start Telegram bot
-    print(">>> Starting Pyrogram client")
-    try:
-        await app.start()
-        print(">>> Bot started and connected to Telegram")
-    except Exception as e:
-        print(f">>> ERROR in app.start(): {e}")
-        return
+    print("[BOT] Connecting to Telegram...")
+    await app.start()
+    print("[BOT] LIVE ✔")
 
-    # 3.1) On startup, owner ko message bhejo (startup test)
     if OWNER_ID:
         try:
-            await app.send_message(OWNER_ID, "✅ Bot started on Render.")
-            print(">>> Sent startup message to owner")
-        except Exception as e:
-            print(f">>> Failed to send startup message to owner: {e}")
+            await app.send_message(OWNER_ID, "🟢 Bot restarted on Render.")
+        except: pass
 
-    # 4) Background tasks
     asyncio.create_task(scheduler_loop())
-    asyncio.create_task(start_web_server())
+    asyncio.create_task(start_web())
 
-    print(">>> Entering idle()")
+    print("[SYSTEM] Idle mode")
     await idle()
-
-    print(">>> Shutting down...")
-    await close_db()
-    await app.stop()
-    print(">>> Bot stopped.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        print(f">>> FATAL ERROR in main(): {e}")
+        print("[FATAL]", e)
