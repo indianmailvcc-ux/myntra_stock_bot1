@@ -1,0 +1,7 @@
+pyrogram
+tgcrypto
+requests
+beautifulsoup4
+motor
+pymongo
+python-dotenv
