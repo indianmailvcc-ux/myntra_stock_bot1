@@ -11,7 +11,6 @@ from db import init_db, close_db, get_all_trackings, update_tracking_status
 from myntra_checker import check_stock
 from handlers import register_all_handlers
 
-
 app = Client(
     "myntra_stock_bot",
     api_id=API_ID,
@@ -98,25 +97,36 @@ async def main():
     print(">>> main() starting")
     print(f">>> API_ID={API_ID}, BOT_TOKEN set={bool(BOT_TOKEN)}, MONGO_URI set={bool(MONGO_URI)}")
 
-    # Init DB
+    # 1) DB init
     try:
         await init_db()
         print(">>> DB init OK")
     except Exception as e:
         print(f">>> DB init FAILED: {e}")
-        # DB fail hone pe bhi bot start karne denge
-        # return
+        # DB fail hone par bhi bot start karne denge
 
-    # Register handlers
+    # 2) Register handlers
     print(">>> Registering handlers")
     register_all_handlers(app)
 
-    # Start Telegram bot
+    # 3) Start Telegram bot
     print(">>> Starting Pyrogram client")
-    await app.start()
-    print(">>> Bot started and connected to Telegram")
+    try:
+        await app.start()
+        print(">>> Bot started and connected to Telegram")
+    except Exception as e:
+        print(f">>> ERROR in app.start(): {e}")
+        return
 
-    # Background tasks
+    # 3.1) On startup, owner ko message bhejo (startup test)
+    if OWNER_ID:
+        try:
+            await app.send_message(OWNER_ID, "✅ Bot started on Render.")
+            print(">>> Sent startup message to owner")
+        except Exception as e:
+            print(f">>> Failed to send startup message to owner: {e}")
+
+    # 4) Background tasks
     asyncio.create_task(scheduler_loop())
     asyncio.create_task(start_web_server())
 
