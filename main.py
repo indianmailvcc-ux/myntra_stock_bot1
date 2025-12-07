@@ -5,8 +5,9 @@ from typing import List, Literal
 from bson import ObjectId
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
+from aiohttp import web
 
-from config import API_ID, API_HASH, BOT_TOKEN, CHECK_INTERVAL
+from config import API_ID, API_HASH, BOT_TOKEN, CHECK_INTERVAL, MONGO_URI
 from db import (
     init_db,
     close_db,
@@ -17,7 +18,6 @@ from db import (
     update_tracking_status,
 )
 from myntra_checker import check_stock
-
 
 StockStatus = Literal["in_stock", "out_of_stock", "unknown"]
 
@@ -30,7 +30,7 @@ app = Client(
     bot_token=BOT_TOKEN,
 )
 
-# ======================== BASIC HANDLERS ======================= #
+# ======================== COMMAND HANDLERS ===================== #
 
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
@@ -40,8 +40,8 @@ async def start_handler(client: Client, message: Message):
         "Main aapke liye Myntra products ka specific *size* track karta hoon.\n"
         "Jaise hi wo size `OUT OF STOCK` se `IN STOCK` hoga, main aapko notify karunga.\n\n"
         "Commands:\n"
-        "• `/track <myntra_url> <size>` – tracking start\n"
-        "• `/list` – jo product track ho rahe hain unki list\n"
+        "• `/track <myntra_url> <size>` – tracking start karo\n"
+        "• `/list` – abhi kaunse products track ho rahe hain\n"
         "• `/untrack <index>` – list me se ek tracking delete\n\n"
         "Example:\n"
         "`/track https://www.myntra.com/men-tshirts/xyz  M`"
@@ -203,28 +203,45 @@ async def scheduler_loop():
         await asyncio.sleep(CHECK_INTERVAL)
 
 
+# ===================== HEALTH WEB SERVER (Render) ============== #
+
+async def health_server():
+    async def handle_root(request):
+        return web.Response(text="Myntra bot alive ✅")
+
+    app_web = web.Application()
+    app_web.router.add_get("/", handle_root)
+
+    port = int(os.getenv("PORT", "10000"))  # Render assigns PORT env
+    runner = web.AppRunner(app_web)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f">>> [WEB] Health server running on port {port}")
+
+
 # ========================== MAIN =============================== #
 
 async def main():
     print("===== BOOTING FULL MYNTRA BOT =====")
     print("API_ID =", API_ID, " BOT_TOKEN set =", bool(BOT_TOKEN))
+    print("MONGO_URI set =", bool(MONGO_URI))
 
     # Init DB
-    from config import MONGO_URI
-    print("MONGO_URI set =", bool(MONGO_URI))
     try:
         await init_db()
         print(">>> [DB] init OK")
     except Exception as e:
         print(">>> [DB ERROR]", e)
 
-    # Start bot
+    # Start Telegram bot
     print(">>> [BOT] starting client...")
     await app.start()
     print(">>> [BOT] LIVE ✔")
 
-    # Start scheduler
+    # Start background scheduler + health web server
     asyncio.create_task(scheduler_loop())
+    asyncio.create_task(health_server())
 
     print(">>> [SYSTEM] idle()...")
     await idle()
