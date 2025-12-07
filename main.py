@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import List
 
 from bson import ObjectId
@@ -9,6 +10,8 @@ from db import init_db, close_db, get_all_trackings, update_tracking_status
 from myntra_checker import check_stock
 from handlers import register_all_handlers
 
+from aiohttp import web  # NEW
+
 
 app = Client(
     "myntra_stock_bot",
@@ -16,14 +19,6 @@ app = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
 )
-
-
-async def periodic_checker():
-    """
-    Background loop: regular check of all tracked items.
-    """
-    await app.start()  # ensure started in this context? We will actually start in main, so skip
-    # ^ we will NOT start here, we will start in main(), so comment this line out in real use.
 
 
 async def _check_once():
@@ -71,7 +66,6 @@ async def scheduler_loop():
         try:
             await _check_once()
         except Exception as e:
-            # Optional: send error to owner
             if OWNER_ID:
                 try:
                     await app.send_message(OWNER_ID, f"Checker error: {e}")
@@ -79,6 +73,26 @@ async def scheduler_loop():
                     pass
         await asyncio.sleep(CHECK_INTERVAL)
 
+
+# ---------- Tiny HTTP server for Render (health check) ----------
+
+async def handle_root(request):
+    return web.Response(text="OK")
+
+
+async def start_web_server():
+    app_web = web.Application()
+    app_web.router.add_get("/", handle_root)
+
+    port = int(os.getenv("PORT", "10000"))  # Render PORT env
+    runner = web.AppRunner(app_web)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"HTTP server started on port {port}")
+
+
+# --------------------------- MAIN ---------------------------
 
 async def main():
     await init_db()
@@ -88,9 +102,13 @@ async def main():
     await app.start()
     print("Bot started.")
 
-    # Start background checker
+    # Background Myntra checker
     asyncio.create_task(scheduler_loop())
 
+    # Start tiny HTTP server so Render web service is happy
+    asyncio.create_task(start_web_server())
+
+    # Keep running until stopped
     await idle()
 
     await close_db()
