@@ -8,249 +8,126 @@ from pyrogram.types import Message
 from aiohttp import web
 
 from config import API_ID, API_HASH, BOT_TOKEN, CHECK_INTERVAL, MONGO_URI
-from db import (
-    init_db,
-    close_db,
-    add_tracking,
-    get_user_trackings,
-    delete_user_tracking_by_index,
-    get_all_trackings,
-    update_tracking_status,
-)
+from db import init_db, close_db, add_tracking, get_user_trackings, delete_user_tracking_by_index, get_all_trackings, update_tracking_status
 from myntra_checker import check_stock
 
-StockStatus = Literal["in_stock", "out_of_stock", "unknown"]
+Status = Literal["in_stock","out_of_stock","unknown"]
 
-# ===================== TELEGRAM BOT CLIENT ===================== #
+
+# ================= BOT ================= #
 
 app = Client(
-    "myntra_stock_bot",
+    "myntra_stock_web_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
+    bot_token=BOT_TOKEN
 )
 
-# ======================== COMMAND HANDLERS ===================== #
+
+# ========= /start handler working guaranteed ========= #
 
 @app.on_message(filters.command("start"))
-async def start_handler(client: Client, message: Message):
-    print(">>> /start from", message.from_user.id)
-    txt = (
-        "👋 *Myntra Stock Tracker Bot*\n\n"
-        "Main aapke liye Myntra products ka specific *size* track karta hoon.\n"
-        "Jaise hi wo size `OUT OF STOCK` se `IN STOCK` hoga, main aapko notify karunga.\n\n"
-        "Commands:\n"
-        "• `/track <myntra_url> <size>` – tracking start karo\n"
-        "• `/list` – abhi kaunse products track ho rahe hain\n"
-        "• `/untrack <index>` – list me se ek tracking delete\n\n"
-        "Example:\n"
-        "`/track https://www.myntra.com/men-tshirts/xyz  M`"
+async def start_handler(client, msg: Message):
+    await msg.reply_text(
+        "👕 *Myntra Stock Tracker Active*\n\n"
+        "Track product size availability on Myntra:\n\n"
+        "/track <url> <size>\n"
+        "/list\n"
+        "/untrack <id>\n"
+        "\nBot is running on Web-Service (free)."
     )
-    await message.reply_text(txt, quote=True)
 
 
 @app.on_message(filters.command("track"))
-async def track_handler(client: Client, message: Message):
-    """
-    Usage: /track <myntra_url> <size>
-    """
-    print(">>> /track from", message.from_user.id, "->", message.text)
+async def track_handler(client, msg: Message):
 
-    if len(message.command) < 3:
-        await message.reply_text(
-            "❗ Usage:\n`/track <myntra_url> <size>`\n\n"
-            "Example:\n`/track https://www.myntra.com/...  M`",
-            quote=True,
-        )
-        return
+    if len(msg.command) < 3:
+        return await msg.reply_text("Usage:\n`/track <myntra_url> <size>`")
 
-    _, url, size = message.command[0], message.command[1], " ".join(message.command[2:])
-    size = size.strip()
+    url = msg.command[1]
+    size = " ".join(msg.command[2:])
+    await msg.reply_text("⏳ Checking...")
 
-    if not url.startswith("http"):
-        await message.reply_text("❗ Please provide a valid Myntra URL starting with http/https.")
-        return
+    status: Status = await check_stock(url,size)
+    tracking_id = await add_tracking(msg.from_user.id,msg.chat.id,url,size,status)
 
-    await message.reply_text("⏳ Checking current stock status, wait...", quote=True)
-
-    status: StockStatus = await check_stock(url, size)
-
-    if status == "unknown":
-        await message.reply_text(
-            "⚠ Iss product/size ka status pata nahi chal paya.\n"
-            "URL ya size check karo, ya thodi der baad try karo.",
-            quote=True,
-        )
-        return
-
-    tracking_id = await add_tracking(
-        user_id=message.from_user.id,
-        chat_id=message.chat.id,
-        product_url=url,
-        size=size,
-        initial_status=status,
+    await msg.reply_text(
+        f"Tracking Started 🔍\nSize: `{size}`\nStatus: `{status}`\nID: `{tracking_id}`"
     )
-
-    if status == "in_stock":
-        msg = (
-            "✅ Abhi ye size **IN STOCK** hai.\n"
-            "Main fir bhi track karta rahunga. Agar status change hua to notify karunga. 🔔\n\n"
-            f"`ID: {tracking_id}`"
-        )
-    else:
-        msg = (
-            "📉 Abhi ye size **OUT OF STOCK** hai.\n"
-            "Jaise hi ye available hoga, main yahi batata rahunga. 🔔\n\n"
-            f"`ID: {tracking_id}`"
-        )
-
-    await message.reply_text(msg, quote=True)
 
 
 @app.on_message(filters.command("list"))
-async def list_handler(client: Client, message: Message):
-    print(">>> /list from", message.from_user.id)
-    items = await get_user_trackings(message.from_user.id)
+async def list_handler(client,msg: Message):
 
+    items = await get_user_trackings(msg.from_user.id)
     if not items:
-        await message.reply_text("🙈 Aap abhi koi bhi product track nahi kar rahe ho.")
-        return
+        return await msg.reply_text("No active trackings!")
 
-    lines = ["📋 *Your current trackings:*\n"]
-    for idx, item in enumerate(items, start=1):
-        url = item.get("product_url")
-        size = item.get("size")
-        status = item.get("last_status", "unknown")
-        lines.append(
-            f"`{idx}.` Size: `{size}` | Status: `{status}`\n{url}\n"
-        )
-
-    await message.reply_text("\n".join(lines), disable_web_page_preview=True)
+    text="📃 Active:\n\n"
+    for i,x in enumerate(items,1):
+        text+=f"**{i}.** {x['size']} | {x['last_status']}\n{x['product_url']}\n\n"
+    await msg.reply_text(text,disable_web_page_preview=True)
 
 
 @app.on_message(filters.command("untrack"))
-async def untrack_handler(client: Client, message: Message):
-    print(">>> /untrack from", message.from_user.id, "->", message.text)
+async def untrack_handler(client,msg: Message):
 
-    if len(message.command) < 2:
-        await message.reply_text(
-            "❗ Usage:\n`/untrack <index>`\n\n"
-            "Index wo number hai jo `/list` me dikh raha hai.",
-            quote=True,
-        )
-        return
-
-    try:
-        index = int(message.command[1])
-    except ValueError:
-        await message.reply_text("❗ Index number hona chahiye. Example: `/untrack 2`")
-        return
-
-    ok = await delete_user_tracking_by_index(message.from_user.id, index)
-    if not ok:
-        await message.reply_text("❗ Invalid index. Pehle `/list` se sahi number dekho.")
-    else:
-        await message.reply_text("✅ Tracking delete kar diya.")
+    if len(msg.command) < 2: return await msg.reply_text("Usage:\n/untrack <id>")
+    ok=await delete_user_tracking_by_index(msg.from_user.id,int(msg.command[1]))
+    await msg.reply_text("Deleted ✔" if ok else "Invalid ID ❌")
 
 
-# ===================== BACKGROUND CHECKER ====================== #
+# ================= BACKGROUND STOCK CHECK ================= #
 
-async def _check_once():
-    print(">>> [LOOP] Checking all tracked items...")
-    items: List[dict] = await get_all_trackings()
-    print(f">>> [DB] {len(items)} items found")
+async def checker():
+    print("🔁 Stock check started")
 
-    if not items:
-        return
-
-    for item in items:
-        url = item.get("product_url")
-        size = item.get("size")
-        last_status = item.get("last_status", "unknown")
-        chat_id = item.get("chat_id")
-        doc_id = item.get("_id")
-
-        current_status: StockStatus = await check_stock(url, size)
-        print(f">>> [CHECK] URL={url}, SIZE={size}, STATUS={current_status}")
-
-        if current_status == "unknown":
-            continue
-
-        if last_status != "in_stock" and current_status == "in_stock":
-            text = (
-                "🎉 *Good news!*\n\n"
-                f"Jis product ko aap track kar rahe the, size `{size}` ab **IN STOCK** hai Myntra pe!\n\n"
-                f"{url}\n\n"
-                "Jaldi order kar lo, fir se out of stock ho sakta hai. 😉"
-            )
-            try:
-                await app.send_message(chat_id, text)
-            except Exception as e:
-                print(">>> [ERROR] while sending in-stock message:", e)
-
-        if isinstance(doc_id, str):
-            doc_id = ObjectId(doc_id)
-        await update_tracking_status(doc_id, current_status)
-
-
-async def scheduler_loop():
-    print(">>> [SCHEDULER] Started with interval =", CHECK_INTERVAL, "seconds")
     while True:
-        try:
-            await _check_once()
-        except Exception as e:
-            print(">>> [SCHEDULER ERROR]", e)
+        items = await get_all_trackings()
+        print(f"Checking {len(items)} items")
+
+        for item in items:
+            status=await check_stock(item["product_url"],item["size"])
+            if status=="in_stock" and item["last_status"]!="in_stock":
+                await app.send_message(
+                    item["chat_id"],
+                    f"🟢 BACK IN STOCK!\n{item['product_url']}\nSize `{item['size']}`"
+                )
+            await update_tracking_status(item["_id"],status)
+
         await asyncio.sleep(CHECK_INTERVAL)
 
 
-# ===================== HEALTH WEB SERVER (Render) ============== #
+# ================= WEB SERVER (IMPORTANT!!!) ================= #
 
-async def health_server():
-    async def handle_root(request):
-        return web.Response(text="Myntra bot alive ✅")
+async def web_index(request):
+    return web.Response(text="BOT_RUNNING_OK",status=200)
 
+async def start_webserver():
+    PORT=int(os.getenv("PORT","10000"))
     app_web = web.Application()
-    app_web.router.add_get("/", handle_root)
-
-    port = int(os.getenv("PORT", "10000"))  # Render assigns PORT env
-    runner = web.AppRunner(app_web)
+    app_web.router.add_get("/",web_index)
+    runner=web.AppRunner(app_web)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    site=web.TCPSite(runner,"0.0.0.0",PORT)
     await site.start()
-    print(f">>> [WEB] Health server running on port {port}")
+    print(f"🌍 Web-server running @ {PORT}")
 
 
-# ========================== MAIN =============================== #
+# ================= MAIN ================= #
 
 async def main():
-    print("===== BOOTING FULL MYNTRA BOT =====")
-    print("API_ID =", API_ID, " BOT_TOKEN set =", bool(BOT_TOKEN))
-    print("MONGO_URI set =", bool(MONGO_URI))
+    print("🚀 Bot starting Web-Service Mode")
 
-    # Init DB
-    try:
-        await init_db()
-        print(">>> [DB] init OK")
-    except Exception as e:
-        print(">>> [DB ERROR]", e)
-
-    # Start Telegram bot
-    print(">>> [BOT] starting client...")
+    await init_db()
     await app.start()
-    print(">>> [BOT] LIVE ✔")
-
-    # Start background scheduler + health web server
-    asyncio.create_task(scheduler_loop())
-    asyncio.create_task(health_server())
-
-    print(">>> [SYSTEM] idle()...")
+    asyncio.create_task(checker())
+    asyncio.create_task(start_webserver())   # THIS keeps bot alive!
     await idle()
 
-    print(">>> [SYSTEM] stopping...")
     await close_db()
     await app.stop()
-    print(">>> [SYSTEM] stopped.")
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
